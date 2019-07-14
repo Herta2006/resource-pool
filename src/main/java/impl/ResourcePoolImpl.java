@@ -111,13 +111,24 @@ public class ResourcePoolImpl<R> implements ResourcePool<R> {
         while (resourceToLock.get(resource).get()) {
             // busy wait
         }
+
+        // at first need to prevent the resource availability
+        boolean removed = availableResources.remove(resource);
+
+        // and then remove the resource lock
         resourceToLock.remove(resource);
-        return availableResources.remove(resource);
+
+        return removed;
     }
 
     @Override
     public boolean removeNow(final R resource) {
+        // at first need to prevent the resource availability
+        boolean removed = availableResources.remove(resource);
+
+        // and then remove the resource lock
         resourceToLock.remove(resource);
-        return availableResources.remove(resource);
+
+        return removed;
     }
 }
