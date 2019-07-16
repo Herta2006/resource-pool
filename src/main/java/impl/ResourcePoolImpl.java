@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 // final variables/parameters occurred here because it helps to compiler make possible improvements
 // and increase a bit performance. In general good practice
 public class ResourcePoolImpl<R> implements ResourcePool<R> {
+    private static final int ONE_SECOND = 1000;
     // AtomicBoolean solves thread safe problem here for simultaneous write/read
     private final AtomicBoolean open = new AtomicBoolean();
 
@@ -36,15 +37,15 @@ public class ResourcePoolImpl<R> implements ResourcePool<R> {
         return open.get();
     }
 
-    @SuppressWarnings("StatementWithEmptyBody")
     @Override
-    public void close() {
+    public void close() throws InterruptedException {
         // check is there any acquired resource presented
         // solves a requirement to wait until all resources be available
         // in practice/tests there is a low probability to close the pool with help of this method,
         // therefore closeNow often force closes the pool
         while (resourceToLock.values().stream().anyMatch(AtomicBoolean::get)) {
-            // busy wait
+            //Simple solution to decrease CPU usage, more flexible approach for wait is exponential backoff
+            Thread.sleep(ONE_SECOND);
         }
         open.set(false);
     }
@@ -58,28 +59,31 @@ public class ResourcePoolImpl<R> implements ResourcePool<R> {
     public R acquire() throws InterruptedException {
         if (!isOpen()) return null;
 
-        // take method is ok to solve a requirement as it retrieves and removes the head of availableResources queue,
-        // waiting if necessary until an element becomes available.
-        final R resource = availableResources.take();
+        synchronized (availableResources) {
+            // take method is ok to solve a requirement as it retrieves and removes the head of availableResources queue,
+            // waiting if necessary until an element becomes available.
+            final R resource = availableResources.take();
 
-        // set is synchronized due to resourceToLock is thread safe and lock is AtomicBoolean
-        resourceToLock.get(resource).set(true);
+            // set is synchronized due to resourceToLock is thread safe and lock is AtomicBoolean
+            resourceToLock.get(resource).set(true);
 
-        return resource;
+            return resource;
+        }
     }
 
     @Override
     public R acquire(final long timeout, final TimeUnit timeUnit) throws InterruptedException {
         if (!isOpen()) return null;
 
-        // poll method is ok to solve a requirement as it retrieves and removes the head of availableResources queue,
-        // waiting up to the specified wait time if necessary for an element to become available.
-        final R resource = availableResources.poll(timeout, timeUnit);
+        synchronized (availableResources) {
+            // poll method is ok to solve a requirement as it retrieves and removes the head of availableResources queue,
+            // waiting up to the specified wait time if necessary for an element to become available.
+            final R resource = availableResources.poll(timeout, timeUnit);
 
-        // set is synchronized due to resourceToLock is thread safe and lock is AtomicBoolean
-        resourceToLock.get(resource).set(true);
-
-        return resource;
+            // set is synchronized due to resourceToLock is thread safe and lock is AtomicBoolean
+            resourceToLock.get(resource).set(true);
+            return resource;
+        }
     }
 
     @Override
@@ -97,38 +101,35 @@ public class ResourcePoolImpl<R> implements ResourcePool<R> {
 
     @Override
     public boolean add(final R resource) {
-        //no need synchronized block because no one thread will set lock to true
-        // till it be added to availableResources "storage"
-        resourceToLock.put(resource, new AtomicBoolean());
-
-        return availableResources.offer(resource);
+        synchronized (availableResources) {
+            boolean offered = availableResources.offer(resource);
+            if (offered) resourceToLock.put(resource, new AtomicBoolean());
+            return offered;
+        }
     }
 
-    @SuppressWarnings("StatementWithEmptyBody")
     @Override
-    public boolean remove(final R resource) {
+    public boolean remove(final R resource) throws InterruptedException {
         // solves a requirement to wait until a resource be available
+        if (!resourceToLock.containsKey(resource)) return false;
+
         while (resourceToLock.get(resource).get()) {
-            // busy wait
+            //Simple solution to decrease CPU usage, more flexible approach for wait is exponential backoff
+            Thread.sleep(ONE_SECOND);
         }
 
-        // at first need to prevent the resource availability
-        boolean removed = availableResources.remove(resource);
-
-        // and then remove the resource lock
-        resourceToLock.remove(resource);
-
-        return removed;
+        return removeNow(resource);
     }
 
     @Override
     public boolean removeNow(final R resource) {
-        // at first need to prevent the resource availability
-        boolean removed = availableResources.remove(resource);
+        synchronized (availableResources) {
+            // at first need to prevent the resource availability
+            boolean removed = availableResources.remove(resource);
 
-        // and then remove the resource lock
-        resourceToLock.remove(resource);
-
-        return removed;
+            // and then remove anyway the resource lock
+            resourceToLock.remove(resource);
+            return removed;
+        }
     }
 }

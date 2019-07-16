@@ -89,7 +89,13 @@ public class ResourcePoolImplTest {
         private void closePool(String threadName) throws InterruptedException {
             System.err.println(format("[%s][%s] CLOSING THE POOL...", now(), threadName));
             try {
-                runAsync(pool::close).get(30, SECONDS);
+                runAsync(() -> {
+                    try {
+                        pool.close();
+                    } catch (InterruptedException e) {
+                        //no-op
+                    }
+                }).get(30, SECONDS);
             } catch (ExecutionException | TimeoutException e) {
                 if (pool.isOpen()) {
                     System.err.println(format("[%s][%s] CANNOT CLOSE POOL IN DEFAULT MODE, FORCE CLOSING...", now(), threadName));
@@ -104,8 +110,15 @@ public class ResourcePoolImplTest {
             System.err.println(format("[%s][%s]\tRemoving the resource with id %d", now(), threadName, resource.getId()));
             Boolean removed = null;
             try {
-                removed = supplyAsync(() -> pool.remove(resource)).get(10, SECONDS);
-            } catch (ExecutionException | TimeoutException e) {
+                removed = supplyAsync(() -> {
+                    try {
+                        return pool.remove(resource);
+                    } catch (InterruptedException e) {
+                        //no-op
+                        return false;
+                    }
+                }).get(10, SECONDS);
+            } catch (ExecutionException | TimeoutException | InterruptedException e) {
                 if (!removed) {
                     System.err.println(format("[%s][%s]\tThe resource with id %d is not removed, force removing", now(), threadName, resource.getId()));
                     pool.removeNow(resource);
